@@ -8,12 +8,12 @@ from collections import defaultdict
 import traceback
 
 bl_info = {
-    "name": "方块网格生成器增强版",
-    "author": "MiniMax Agent",
-    "version": (3, 14, 0),  # 版本更新：修复映射表重新加载问题
+    "name": "Mini自然地形tool",
+    "author": "滑稽->CMake",
+    "version": (3, 17, 0),  # 版本更新：完全修复子模型和主模型等比缩放问题
     "blender": (3, 0, 0),
     "location": "3D视图 > 侧边栏 > 方块工具",
-    "description": "从文件夹加载OBJ方块模型，支持映射表驱动的主模型+子模型系统，支持自发光贴图，修复尺寸缩放问题和映射表重新加载",
+    "description": "从文件夹加载OBJ方块模型，支持映射表驱动的主模型+子模型系统，支持自发光贴图，完全修复子模型缩放问题，支持等比缩放",
     "category": "Object",
 }
 
@@ -2055,11 +2055,11 @@ def apply_submodel_materials(obj, position_id, texture_base_path, mapping_data):
     return True
 
 # ============================================================================
-# 核心功能函数 - 修复尺寸缩放问题
+# 核心功能函数 - 完全修复尺寸缩放问题，支持等比缩放
 # ============================================================================
 
-def load_and_setup_model(context, model_path, model_name, position_id, texture_base_path, mapping_data, is_main_model=True):
-    """加载并设置模型 - 修复：添加缩放支持"""
+def load_and_setup_model(context, model_path, model_name, position_id, texture_base_path, mapping_data, is_main_model=True, uniform_scale_factor=None):
+    """加载并设置模型 - 修复：支持等比缩放，主模型和子模型使用相同的缩放因子"""
     print(f"加载模型: {model_path}")
     
     # 保存当前状态
@@ -2086,6 +2086,7 @@ def load_and_setup_model(context, model_path, model_name, position_id, texture_b
         base_block_size = settings.base_block_size
         
         print(f"  缩放设置: 模式={scale_mode}, 自定义缩放={custom_scale_factor}, 基础网格={base_block_size}")
+        print(f"  是否为子模型: {not is_main_model}")
         
         # 导入OBJ文件
         try:
@@ -2138,11 +2139,35 @@ def load_and_setup_model(context, model_path, model_name, position_id, texture_b
             bpy.ops.mesh.normals_make_consistent(inside=False)
             bpy.ops.object.mode_set(mode='OBJECT')
             
-            # 计算原始尺寸
+            # 计算原始尺寸（应用变换后的实际尺寸）
             size_x, size_y, size_z, max_size = calculate_model_dimensions(merged_obj)
             
-            # 计算缩放因子
-            scale_factor = calculate_scaling_factor(max_size, scale_mode, custom_scale_factor, base_block_size)
+            # 计算缩放因子 - 重要修复：支持等比缩放
+            scale_factor = 1.0
+            
+            # 如果提供了统一的缩放因子，就使用它（等比缩放）
+            if uniform_scale_factor is not None:
+                scale_factor = uniform_scale_factor
+                print(f"  使用统一缩放因子: {scale_factor:.6f} (等比缩放)")
+            else:
+                # 否则根据自身尺寸和设置计算缩放因子
+                if scale_mode == 'ONE_METER':
+                    # 缩放到基础网格大小
+                    if max_size > 0.001:
+                        scale_factor = base_block_size / max_size
+                    else:
+                        scale_factor = 1.0
+                elif scale_mode == 'CUSTOM':
+                    scale_factor = custom_scale_factor
+                else:  # 'ORIGINAL'
+                    scale_factor = 1.0
+                print(f"  独立计算缩放因子: {scale_factor:.6f}")
+            
+            # 记录原始尺寸
+            original_size_x = size_x
+            original_size_y = size_y
+            original_size_z = size_z
+            original_max_size = max_size
             
             # 应用缩放（如果缩放因子不等于1.0）
             if abs(scale_factor - 1.0) > 0.0001:
@@ -2160,9 +2185,13 @@ def load_and_setup_model(context, model_path, model_name, position_id, texture_b
             merged_obj["block_max_size"] = max_size
             merged_obj["is_main_model"] = is_main_model
             merged_obj["scale_factor"] = scale_factor
+            merged_obj["original_size_x"] = original_size_x
+            merged_obj["original_size_y"] = original_size_y
+            merged_obj["original_size_z"] = original_size_z
+            merged_obj["original_max_size"] = original_max_size
             
             print(f"✓ 加载模型成功: {merged_obj.name}")
-            print(f"  原始尺寸: X={size_x/scale_factor:.6f}, Y={size_y/scale_factor:.6f}, Z={size_z/scale_factor:.6f}, 最大={max_size/scale_factor:.6f}")
+            print(f"  原始尺寸: X={original_size_x:.6f}, Y={original_size_y:.6f}, Z={original_size_z:.6f}, 最大={original_max_size:.6f}")
             print(f"  缩放后尺寸: X={size_x:.6f}, Y={size_y:.6f}, Z={size_z:.6f}, 最大={max_size:.6f}")
             print(f"  缩放因子: {scale_factor:.6f}")
             
@@ -2203,7 +2232,7 @@ def load_and_setup_model(context, model_path, model_name, position_id, texture_b
             bpy.ops.object.mode_set(mode=current_mode)
 
 def create_template_for_position_id(context, position_id, texture_base_path, models_base_path):
-    """为指定位置ID创建模板（支持主模型+子模型系统）- 修复：传递缩放设置"""
+    """为指定位置ID创建模板（支持主模型+子模型系统）- 修复：等比缩放"""
     manager = BlockModelManager()
     
     # 检查是否已存在该位置ID的模板
@@ -2243,6 +2272,134 @@ def create_template_for_position_id(context, position_id, texture_base_path, mod
         # 清除所有选择
         bpy.ops.object.select_all(action='DESELECT')
         
+        # 获取缩放设置
+        settings = context.scene.block_generator_settings
+        scale_mode = settings.scale_mode
+        custom_scale_factor = settings.custom_scale_factor
+        base_block_size = settings.base_block_size
+        
+        # 关键修复：计算统一的缩放因子，用于等比缩放
+        uniform_scale_factor = None
+        
+        # 首先加载主模型计算缩放因子（如果存在）
+        if model_config.has_main_model():
+            print(f"\n计算等比缩放因子（基于主模型）...")
+            
+            # 临时加载主模型以计算原始尺寸
+            temp_model = None
+            try:
+                # 导入但不应用缩放
+                existing_objects = set(obj.name for obj in bpy.data.objects)
+                bpy.ops.wm.obj_import(filepath=model_config.main_model_path)
+                
+                # 获取导入的新对象
+                imported_objs = []
+                for obj in bpy.data.objects:
+                    if obj.name not in existing_objects:
+                        imported_objs.append(obj)
+                
+                if imported_objs:
+                    # 合并所有导入的对象
+                    if len(imported_objs) > 1:
+                        for obj in imported_objs:
+                            obj.select_set(True)
+                        context.view_layer.objects.active = imported_objs[0]
+                        bpy.ops.object.join()
+                        temp_model = context.active_object
+                    else:
+                        temp_model = imported_objs[0]
+                    
+                    # 计算原始尺寸
+                    temp_size_x, temp_size_y, temp_size_z, temp_max_size = calculate_model_dimensions(temp_model)
+                    
+                    print(f"  主模型原始尺寸: X={temp_size_x:.6f}, Y={temp_size_y:.6f}, Z={temp_size_z:.6f}, 最大={temp_max_size:.6f}")
+                    
+                    # 根据缩放模式计算统一的缩放因子
+                    if scale_mode == 'ONE_METER':
+                        if temp_max_size > 0.001:
+                            uniform_scale_factor = base_block_size / temp_max_size
+                        else:
+                            uniform_scale_factor = 1.0
+                    elif scale_mode == 'CUSTOM':
+                        uniform_scale_factor = custom_scale_factor
+                    else:  # 'ORIGINAL'
+                        uniform_scale_factor = 1.0
+                    
+                    print(f"  计算统一缩放因子: {uniform_scale_factor:.6f}")
+                    
+                    # 删除临时模型
+                    bpy.data.objects.remove(temp_model)
+            except Exception as e:
+                print(f"  计算缩放因子时出错: {e}")
+                if temp_model and temp_model.name in bpy.data.objects:
+                    bpy.data.objects.remove(temp_model)
+        
+        # 如果没有主模型，但有子模型，使用子模型计算缩放因子
+        elif model_config.has_submodel() and uniform_scale_factor is None:
+            print(f"\n计算等比缩放因子（基于子模型）...")
+            
+            # 临时加载子模型以计算原始尺寸
+            temp_model = None
+            try:
+                # 导入但不应用缩放
+                existing_objects = set(obj.name for obj in bpy.data.objects)
+                bpy.ops.wm.obj_import(filepath=model_config.submodel_path)
+                
+                # 获取导入的新对象
+                imported_objs = []
+                for obj in bpy.data.objects:
+                    if obj.name not in existing_objects:
+                        imported_objs.append(obj)
+                
+                if imported_objs:
+                    # 合并所有导入的对象
+                    if len(imported_objs) > 1:
+                        for obj in imported_objs:
+                            obj.select_set(True)
+                        context.view_layer.objects.active = imported_objs[0]
+                        bpy.ops.object.join()
+                        temp_model = context.active_object
+                    else:
+                        temp_model = imported_objs[0]
+                    
+                    # 计算原始尺寸
+                    temp_size_x, temp_size_y, temp_size_z, temp_max_size = calculate_model_dimensions(temp_model)
+                    
+                    print(f"  子模型原始尺寸: X={temp_size_x:.6f}, Y={temp_size_y:.6f}, Z={temp_size_z:.6f}, 最大={temp_max_size:.6f}")
+                    
+                    # 根据缩放模式计算统一的缩放因子
+                    if scale_mode == 'ONE_METER':
+                        if temp_max_size > 0.001:
+                            uniform_scale_factor = base_block_size / temp_max_size
+                        else:
+                            uniform_scale_factor = 1.0
+                    elif scale_mode == 'CUSTOM':
+                        uniform_scale_factor = custom_scale_factor
+                    else:  # 'ORIGINAL'
+                        uniform_scale_factor = 1.0
+                    
+                    print(f"  计算统一缩放因子: {uniform_scale_factor:.6f}")
+                    
+                    # 删除临时模型
+                    bpy.data.objects.remove(temp_model)
+            except Exception as e:
+                print(f"  计算缩放因子时出错: {e}")
+                if temp_model and temp_model.name in bpy.data.objects:
+                    bpy.data.objects.remove(temp_model)
+        
+        # 如果还是没有计算到缩放因子，使用默认值
+        if uniform_scale_factor is None:
+            if scale_mode == 'ONE_METER':
+                # 假设默认尺寸为100，缩放到基础网格大小
+                uniform_scale_factor = base_block_size / 100.0
+            elif scale_mode == 'CUSTOM':
+                uniform_scale_factor = custom_scale_factor
+            else:  # 'ORIGINAL'
+                uniform_scale_factor = 1.0
+            print(f"  使用默认缩放因子: {uniform_scale_factor:.6f}")
+        
+        print(f"\n等比缩放因子已确定: {uniform_scale_factor:.6f}")
+        
         # 1. 创建主模型（如果需要）
         if model_config.has_main_model():
             print(f"创建主模型...")
@@ -2253,7 +2410,8 @@ def create_template_for_position_id(context, position_id, texture_base_path, mod
                 position_id,
                 texture_base_path,
                 mapping_data,
-                is_main_model=True
+                is_main_model=True,
+                uniform_scale_factor=uniform_scale_factor  # 使用统一缩放因子
             )
             if main_model:
                 # 隐藏主模型
@@ -2263,9 +2421,11 @@ def create_template_for_position_id(context, position_id, texture_base_path, mod
             else:
                 print(f"✗ 主模型创建失败")
         
-        # 2. 创建子模型（如果需要）
+        # 2. 创建子模型（如果需要）- 关键修复：使用相同的缩放因子
         if model_config.has_submodel():
             print(f"创建子模型...")
+            print(f"  子模型使用相同的等比缩放因子: {uniform_scale_factor:.6f}")
+            
             submodel = load_and_setup_model(
                 context,
                 model_config.submodel_path,
@@ -2273,13 +2433,27 @@ def create_template_for_position_id(context, position_id, texture_base_path, mod
                 position_id,
                 texture_base_path,
                 mapping_data,
-                is_main_model=False
+                is_main_model=False,
+                uniform_scale_factor=uniform_scale_factor  # 关键：使用相同的缩放因子
             )
             if submodel:
                 # 隐藏子模型
                 submodel.hide_set(True)
                 submodel.hide_render = True
                 print(f"✓ 子模型创建成功: {submodel.name}")
+                
+                # 检查子模型尺寸
+                if "block_size_x" in submodel:
+                    sub_size_x = submodel["block_size_x"]
+                    sub_size_y = submodel["block_size_y"]
+                    sub_size_z = submodel["block_size_z"]
+                    print(f"  子模型实际尺寸: X={sub_size_x:.6f}, Y={sub_size_y:.6f}, Z={sub_size_z:.6f}")
+                    
+                    # 检查是否为整数尺寸
+                    if abs(sub_size_x - round(sub_size_x)) > 0.001 or \
+                       abs(sub_size_y - round(sub_size_y)) > 0.001 or \
+                       abs(sub_size_z - round(sub_size_z)) > 0.001:
+                        print(f"  注意：子模型尺寸不是整数，保持等比缩放后的实际尺寸")
             else:
                 print(f"✗ 子模型创建失败")
         
@@ -2291,30 +2465,79 @@ def create_template_for_position_id(context, position_id, texture_base_path, mod
             
             # 设置容器位置为原点
             container.location = (0, 0, 0)
+            container.scale = (1.0, 1.0, 1.0)  # 确保容器缩放为1
+            
+            # 获取模板尺寸 - 使用主模型尺寸或子模型尺寸
+            template_size_x, template_size_y, template_size_z = 1.0, 1.0, 1.0
+            
+            if main_model:
+                # 优先使用主模型尺寸
+                if "block_size_x" in main_model:
+                    template_size_x = main_model["block_size_x"]
+                    template_size_y = main_model["block_size_y"]
+                    template_size_z = main_model["block_size_z"]
+                else:
+                    template_size_x, template_size_y, template_size_z, _ = calculate_model_dimensions(main_model)
+                print(f"  模板尺寸使用主模型: X={template_size_x:.6f}, Y={template_size_y:.6f}, Z={template_size_z:.6f}")
+            elif submodel:
+                # 如果没有主模型，使用子模型尺寸
+                if "block_size_x" in submodel:
+                    template_size_x = submodel["block_size_x"]
+                    template_size_y = submodel["block_size_y"]
+                    template_size_z = submodel["block_size_z"]
+                else:
+                    template_size_x, template_size_y, template_size_z, _ = calculate_model_dimensions(submodel)
+                print(f"  模板尺寸使用子模型: X={template_size_x:.6f}, Y={template_size_y:.6f}, Z={template_size_z:.6f}")
             
             # 将主模型和子模型设置为容器的子对象
             if main_model:
                 main_model.parent = container
+                # 应用变换，确保子对象相对于父容器的变换正确
                 main_matrix = main_model.matrix_world.copy()
                 main_model.matrix_parent_inverse = container.matrix_world.inverted() @ main_matrix
             
             if submodel:
-                submodel.parent = container  # 子模型直接挂载到模板容器
+                submodel.parent = container
+                # 应用变换，确保子对象相对于父容器的变换正确
                 sub_matrix = submodel.matrix_world.copy()
                 submodel.matrix_parent_inverse = container.matrix_world.inverted() @ sub_matrix
+                print(f"  子模型父级逆矩阵已设置，保持等比缩放")
+            
+            # 存储尺寸信息到容器
+            container["template_size_x"] = template_size_x
+            container["template_size_y"] = template_size_y
+            container["template_size_z"] = template_size_z
+            container["template_position_id"] = position_id
+            
+            # 重要：存储缩放信息
+            container["uniform_scale_factor"] = uniform_scale_factor
+            if main_model and "scale_factor" in main_model:
+                container["main_model_scale_factor"] = main_model["scale_factor"]
+            if submodel and "scale_factor" in submodel:
+                container["submodel_scale_factor"] = submodel["scale_factor"]
             
             # 隐藏模板容器
             container.hide_set(True)
             container.hide_render = True
             
+            # 确保容器没有缩放
+            bpy.ops.object.select_all(action='DESELECT')
+            container.select_set(True)
+            context.view_layer.objects.active = container
+            bpy.ops.object.transform_apply(scale=True)
+            
             # 保存模板
             manager.set_template(position_id, container)
             
             print(f"✓ 成功创建位置ID {position_id} 的模板容器: {container.name}")
+            print(f"  等比缩放因子: {uniform_scale_factor:.6f}")
+            print(f"  模板尺寸: X={template_size_x:.6f}, Y={template_size_y:.6f}, Z={template_size_z:.6f}")
             if main_model:
                 print(f"  包含主模型: {main_model.name}")
             if submodel:
                 print(f"  包含子模型: {submodel.name}")
+                if "block_size_x" in submodel:
+                    print(f"  子模型实际尺寸: X={submodel['block_size_x']:.6f}, Y={submodel['block_size_y']:.6f}, Z={submodel['block_size_z']:.6f}")
             return container
         
         else:
@@ -2352,7 +2575,7 @@ def create_template_for_position_id(context, position_id, texture_base_path, mod
 
 def create_block_from_template(context, position_id, x, y, z, base_block_size, 
                               direction_mode='EAST', use_model_center=False):
-    """从模板创建方块（支持主模型+子模型系统）"""
+    """从模板创建方块（支持主模型+子模型系统）- 修复：完全修复尺寸问题"""
     print(f"\n创建方块: 位置ID={position_id}, 坐标=({x},{y},{z}), 方向={direction_mode}")
     
     block_name = f"Block_{position_id}_{x}_{y}_{z}"
@@ -2370,21 +2593,33 @@ def create_block_from_template(context, position_id, x, y, z, base_block_size,
         print(f"✗ 错误: 找不到位置ID {position_id} 的模板")
         return None
     
-    # 获取模板尺寸（使用第一个子对象的尺寸）
-    container_children = [child for child in template_container.children]
-    if not container_children:
-        print(f"✗ 错误: 模板容器没有子对象")
-        return None
-    
-    # 使用第一个子对象的尺寸
-    child_obj = container_children[0]
-    if "block_size_x" in child_obj:
-        size_x = child_obj["block_size_x"]
-        size_y = child_obj["block_size_y"]
-        size_z = child_obj["block_size_z"]
+    # 获取模板尺寸 - 直接从模板容器中读取
+    if "template_size_x" in template_container:
+        size_x = template_container["template_size_x"]
+        size_y = template_container["template_size_y"]
+        size_z = template_container["template_size_z"]
+        print(f"从模板容器读取尺寸: X={size_x:.6f}, Y={size_y:.6f}, Z={size_z:.6f}")
     else:
-        # 重新计算尺寸
-        size_x, size_y, size_z, _ = calculate_model_dimensions(child_obj)
+        # 如果没有存储尺寸，尝试从子对象中获取
+        container_children = [child for child in template_container.children]
+        if not container_children:
+            print(f"✗ 错误: 模板容器没有子对象")
+            return None
+        
+        # 使用第一个子对象的尺寸
+        child_obj = container_children[0]
+        if "block_size_x" in child_obj:
+            size_x = child_obj["block_size_x"]
+            size_y = child_obj["block_size_y"]
+            size_z = child_obj["block_size_z"]
+        else:
+            # 重新计算尺寸
+            # 临时显示子对象以计算尺寸
+            was_hidden = child_obj.hide_get()
+            child_obj.hide_set(False)
+            size_x, size_y, size_z, _ = calculate_model_dimensions(child_obj)
+            child_obj.hide_set(was_hidden)
+        print(f"从子对象读取尺寸: X={size_x:.6f}, Y={size_y:.6f}, Z={size_z:.6f}")
     
     print(f"模型尺寸: X={size_x:.6f}, Y={size_y:.6f}, Z={size_z:.6f}")
     print(f"基础网格大小: {base_block_size}")
@@ -2460,6 +2695,9 @@ def create_block_from_template(context, position_id, x, y, z, base_block_size,
         new_container["grid_z"] = z
         new_container["position_id"] = position_id
         new_container["direction"] = direction_mode
+        new_container["model_size_x"] = size_x
+        new_container["model_size_y"] = size_y
+        new_container["model_size_z"] = size_z
         
         # 重命名子对象
         for child in new_container.children:
@@ -2890,7 +3128,7 @@ class OBJECT_OT_import_positions(bpy.types.Operator):
 class OBJECT_OT_generate_from_grid(bpy.types.Operator):
     bl_idname = "object.generate_from_grid"
     bl_label = "从坐标生成方块"
-    bl_description = "根据坐标生成方块，支持主模型+子模型系统，支持自发光贴图，修复尺寸缩放问题"
+    bl_description = "根据坐标生成方块，支持主模型+子模型系统，支持自发光贴图，修复尺寸缩放问题，支持等比缩放"
     bl_options = {'REGISTER', 'UNDO'}
     
     def execute(self, context):
@@ -2948,7 +3186,7 @@ class OBJECT_OT_generate_from_grid(bpy.types.Operator):
         print(f"位置表中需要的位置ID列表: {sorted(required_ids)}")
         
         # 为每个位置ID创建模板（支持主模型+子模型系统）
-        print(f"\n为每个位置ID创建模板（支持主模型+子模型系统）...")
+        print(f"\n为每个位置ID创建模板（支持主模型+子模型系统，等比缩放）...")
         templates_created = 0
         for position_id in required_ids:
             template = create_template_for_position_id(
@@ -2960,6 +3198,8 @@ class OBJECT_OT_generate_from_grid(bpy.types.Operator):
             if template:
                 templates_created += 1
                 print(f"✓ 创建位置ID {position_id} 的模板成功: {template.name}")
+                if "uniform_scale_factor" in template:
+                    print(f"  等比缩放因子: {template['uniform_scale_factor']:.6f}")
             else:
                 print(f"✗ 创建位置ID {position_id} 的模板失败")
         
@@ -3004,9 +3244,10 @@ class OBJECT_OT_generate_from_grid(bpy.types.Operator):
         print(f"生成完成:")
         print(f"成功: {generated_count} 个")
         print(f"失败: {failed_count} 个")
+        print(f"等比缩放: 已启用")
         
         if generated_count > 0:
-            self.report({'INFO'}, f"成功生成 {generated_count} 个方块，失败 {failed_count} 个")
+            self.report({'INFO'}, f"成功生成 {generated_count} 个方块，失败 {failed_count} 个，已启用等比缩放")
         else:
             self.report({'WARNING'}, "没有成功生成任何方块")
         
@@ -3255,6 +3496,8 @@ class OBJECT_OT_test_mapping_system(bpy.types.Operator):
                 print(f"  包含 {len(template.children)} 个子对象")
                 for child in template.children:
                     print(f"    - {child.name} ({child.type})")
+                if "uniform_scale_factor" in template:
+                    print(f"  等比缩放因子: {template['uniform_scale_factor']:.6f}")
             else:
                 print(f"✗ 模板创建失败")
         
@@ -3567,7 +3810,10 @@ class VIEW3D_PT_block_generator_main(bpy.types.Panel):
         col.label(text="修复: Z面和-Z面UV映射问题")
         col.label(text="新增: teamspawn类型独立材质系统，只使用一个材质球")
         col.label(text="修复: 尺寸缩放问题，现在在模板创建时正确应用缩放")
+        col.label(text="修复: 子模型缩放问题，现在子模型会正确应用等比缩放因子")
         col.label(text="新增: 重新加载映射表功能，清空模板时保留路径设置")
+        col.label(text="修复: 完全支持等比缩放，主模型和子模型使用相同的缩放因子")
+        col.label(text="注意: 主模型默认100尺寸，子模型不规则尺寸，保持等比缩放")
         col.label(text="注意: 保持OBJ导入的原始精度，不进行四舍五入")
 
 # ============================================================================
